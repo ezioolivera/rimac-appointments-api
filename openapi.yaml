@@ -1,0 +1,216 @@
+openapi: 3.0.3
+
+info:
+  title: RIMAC Appointments API
+  description: |
+    API backend para el registro y consulta de citas médicas
+    de asegurados de RIMAC.
+
+    El procesamiento de las citas es asíncrono:
+    la solicitud se registra inicialmente en DynamoDB con
+    estado PENDING y posteriormente es procesada mediante
+    SNS, SQS, Lambda, RDS MySQL y EventBridge.
+  version: 1.0.0
+  license:
+    name: MIT
+
+servers:
+  - url: https://hhb6exc0ae.execute-api.us-east-1.amazonaws.com/dev
+    description: AWS API Gateway - Dev
+
+tags:
+  - name: Appointments
+    description: Gestión de citas médicas
+
+paths:
+
+  /appointments:
+
+    post:
+      tags:
+        - Appointments
+      summary: Registrar una cita médica
+      description: |
+        Registra una solicitud de agendamiento.
+
+        La solicitud se almacena inicialmente en DynamoDB
+        con estado PENDING y se publica en SNS para su
+        procesamiento asíncrono según el país.
+      operationId: createAppointment
+      security: []
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppointmentRequest'
+            examples:
+              peru:
+                summary: Cita para Perú
+                value:
+                  insuredId: "98765"
+                  scheduleId: 456
+                  countryISO: "PE"
+
+              chile:
+                summary: Cita para Chile
+                value:
+                  insuredId: "12345"
+                  scheduleId: 456
+                  countryISO: "CL"
+
+      responses:
+
+        '201':
+          description: Solicitud de agendamiento registrada correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+
+        '400':
+          description: Solicitud inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Appointments
+      summary: Listar citas por asegurado
+      description: |
+        Obtiene todas las solicitudes de agendamiento asociadas
+        a un asegurado.
+
+        El asegurado se identifica mediante el parámetro
+        insuredId.
+      operationId: getAppointmentsByInsured
+      security: []
+
+      parameters:
+        - name: insuredId
+          in: query
+          required: true
+          description: Código del asegurado de 5 dígitos.
+          schema:
+            type: string
+            pattern: '^[0-9]{5}$'
+            example: "98765"
+
+      responses:
+
+        '200':
+          description: Lista de citas del asegurado
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Appointment'
+
+        '400':
+          description: Parámetro insuredId inválido o ausente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+
+  schemas:
+
+    CreateAppointmentRequest:
+      type: object
+      required:
+        - insuredId
+        - scheduleId
+        - countryISO
+
+      properties:
+
+        insuredId:
+          type: string
+          description: Código del asegurado de exactamente 5 dígitos.
+          pattern: '^[0-9]{5}$'
+          example: "98765"
+
+        scheduleId:
+          type: integer
+          format: int64
+          description: Identificador del espacio disponible para la cita.
+          example: 456
+
+        countryISO:
+          type: string
+          description: País donde se realizará el agendamiento.
+          enum:
+            - PE
+            - CL
+          example: PE
+
+    Appointment:
+      type: object
+      required:
+        - id
+        - insuredId
+        - scheduleId
+        - countryISO
+        - status
+        - createdAt
+        - updatedAt
+
+      properties:
+
+        id:
+          type: string
+          format: uuid
+          description: Identificador único de la solicitud.
+          example: eebc92dd-617f-4067-bb53-06d95ed16dde
+
+        insuredId:
+          type: string
+          description: Código del asegurado.
+          example: "98765"
+
+        scheduleId:
+          type: integer
+          format: int64
+          description: Identificador del espacio para la cita.
+          example: 456
+
+        countryISO:
+          type: string
+          enum:
+            - PE
+            - CL
+          description: País del procesamiento.
+          example: PE
+
+        status:
+          type: string
+          enum:
+            - PENDING
+            - COMPLETED
+          description: Estado actual del agendamiento.
+          example: COMPLETED
+
+        createdAt:
+          type: string
+          format: date-time
+          description: Fecha de creación.
+          example: "2026-10-02T18:58:09.212Z"
+
+        updatedAt:
+          type: string
+          format: date-time
+          description: Fecha de última actualización.
+          example: "2026-10-02T18:58:10.971Z"
+
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          example: insuredId query parameter is required

@@ -1,0 +1,294 @@
+service: rimac-appointments-api
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  timeout: 30
+  
+  environment:
+    APPOINTMENTS_TABLE:
+      Ref: AppointmentsTable
+
+    APPOINTMENT_TOPIC_ARN:
+      Ref: AppointmentTopic
+    
+    EVENT_BUS_NAME:
+      Ref: AppointmentEventBus
+    
+    DB_HOST: ${env:DB_HOST}
+    DB_PORT: ${env:DB_PORT}
+    DB_NAME: ${env:DB_NAME}
+    DB_USER: ${env:DB_USER}
+    DB_PASSWORD: ${env:DB_PASSWORD}
+
+  iam:
+    role:
+      statements:
+
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:Query
+          Resource:
+            - Fn::GetAtt:
+                - AppointmentsTable
+                - Arn
+            - Fn::Sub: '${AppointmentsTable.Arn}/index/*'
+
+        - Effect: Allow
+          Action:
+            - sns:Publish
+          Resource:
+            - Ref: AppointmentTopic
+
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource:
+            - Fn::GetAtt:
+                - AppointmentEventBus
+                - Arn
+        
+        - Effect: Allow
+          Action:
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            - sqs:GetQueueAttributes
+          Resource:
+            - Fn::GetAtt:
+                - AppointmentConfirmationQueue
+                - Arn
+
+
+functions:
+
+  appointment:
+    handler: dist/handlers/appointment.handler
+    
+    events:
+      - http:
+          path: appointments
+          method: post
+
+      - http:
+          path: appointments
+          method: get
+
+  appointmentPe:
+    handler: dist/handlers/appointment-pe.handler
+    vpc:
+      securityGroupIds:
+        - sg-038b886c37dbc04fc
+      subnetIds:
+        - subnet-0cec2c5e39f78be3b
+        - subnet-013a245207e6031de
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - AppointmentPeQueue
+              - Arn
+  
+  appointmentCl:
+    handler: dist/handlers/appointment-cl.handler
+    vpc:
+      securityGroupIds:
+        - sg-038b886c37dbc04fc
+      subnetIds:
+        - subnet-0cec2c5e39f78be3b
+        - subnet-013a245207e6031de
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - AppointmentClQueue
+              - Arn
+
+  appointmentConfirmation:
+    handler: dist/handlers/appointment-confirmation.handler
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - AppointmentConfirmationQueue
+              - Arn
+
+resources:
+  Resources:
+
+    AppointmentsTable:
+      Type: AWS::DynamoDB::Table
+
+      Properties:
+        TableName: ${self:service}-appointments-${self:provider.stage}
+
+        BillingMode: PAY_PER_REQUEST
+
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+
+          - AttributeName: insuredId
+            AttributeType: S
+
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+
+        GlobalSecondaryIndexes:
+
+          - IndexName: insuredId-index
+
+            KeySchema:
+              - AttributeName: insuredId
+                KeyType: HASH
+
+            Projection:
+              ProjectionType: ALL
+
+
+    AppointmentTopic:
+      Type: AWS::SNS::Topic
+
+      Properties:
+        TopicName: ${self:service}-appointments-${self:provider.stage}
+    
+
+    AppointmentPeQueue:
+      Type: AWS::SQS::Queue
+
+      Properties:
+        QueueName: ${self:service}-appointments-pe-${self:provider.stage}
+    
+    AppointmentClQueue:
+      Type: AWS::SQS::Queue
+
+      Properties:
+        QueueName: ${self:service}-appointments-cl-${self:provider.stage}
+
+    AppointmentPeSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn:
+          Ref: AppointmentTopic
+        Protocol: sqs
+        Endpoint:
+          Fn::GetAtt:
+            - AppointmentPeQueue
+            - Arn
+        FilterPolicy:
+          countryISO:
+            - PE
+
+    AppointmentClSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn:
+          Ref: AppointmentTopic
+        Protocol: sqs
+        Endpoint:
+          Fn::GetAtt:
+            - AppointmentClQueue
+            - Arn
+        FilterPolicy:
+          countryISO:
+            - CL
+
+    AppointmentPeQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+
+      Properties:
+        Queues:
+          - Ref: AppointmentPeQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - Fn::GetAtt:
+                    - AppointmentPeQueue
+                    - Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn:
+                    Ref: AppointmentTopic
+    AppointmentClQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+
+      Properties:
+        Queues:
+          - Ref: AppointmentClQueue
+
+        PolicyDocument:
+          Version: '2012-10-17'
+
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action:
+                - sqs:SendMessage
+
+              Resource:
+                - Fn::GetAtt:
+                    - AppointmentClQueue
+                    - Arn
+
+              Condition:
+                ArnEquals:
+                  aws:SourceArn:
+                    Ref: AppointmentTopic
+
+    AppointmentEventBus:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: ${self:service}-appointments-${self:provider.stage}
+    
+    AppointmentConfirmationQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-appointments-confirmation-${self:provider.stage}
+
+    AppointmentConfirmationQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - Ref: AppointmentConfirmationQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - Fn::GetAtt:
+                    - AppointmentConfirmationQueue
+                    - Arn
+
+    AppointmentConfirmationRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name: ${self:service}-appointment-confirmation-${self:provider.stage}
+        EventBusName:
+          Ref: AppointmentEventBus
+        EventPattern:
+          source:
+            - rimac.appointments
+          detail-type:
+            - AppointmentConfirmed
+        Targets:
+          - Arn:
+              Fn::GetAtt:
+                - AppointmentConfirmationQueue
+                - Arn
+            Id: AppointmentConfirmationQueueTarget
+    
